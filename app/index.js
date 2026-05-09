@@ -1,14 +1,27 @@
 import * as Clipboard from 'expo-clipboard';
-import { StatusBar } from 'expo-status-bar';
+import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import { limitToLast, onValue, push, query, ref } from 'firebase/database';
 import { useEffect, useState } from 'react';
-import { Alert, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
 import { decrypt, encrypt, getMyKeys } from './crypto';
 import { database } from './firebaseConfig';
 
 export default function App() {
   const [myKeys, setMyKeys] = useState(null);
-  const [partnerPublicKey, setPartnerPublicKey] = useState('');
+  const [contactName, setContactName] = useState(''); // Name you assign to the other person
+  const [peerPublicKey, setPeerPublicKey] = useState('');
   const [message, setMessage] = useState('');
   const [chat, setChat] = useState([]);
   const [isSetup, setIsSetup] = useState(true);
@@ -22,63 +35,89 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!partnerPublicKey || !myKeys) return;
+    if (!peerPublicKey || !myKeys) return;
     const chatRef = query(ref(database, 'messages/'), limitToLast(50));
     const unsubscribe = onValue(chatRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const loadedMsgs = Object.values(data).map(msg => {
-          const decryptedText = decrypt(msg.data, myKeys.secret, partnerPublicKey);
-          return { id: msg.timestamp, text: decryptedText, sender: msg.sender };
+          const decryptedText = decrypt(msg.data, myKeys.secret, peerPublicKey);
+          return {
+            id: msg.timestamp,
+            text: decryptedText,
+            sender: msg.sender,
+            // Logic: If sender is me, show 'Me'. If not, show the name I assigned them.
+            display: msg.sender === myKeys.publicK ? 'Me' : contactName 
+          };
         });
         setChat(loadedMsgs.sort((a, b) => a.id - b.id));
       }
     });
     return () => unsubscribe();
-  }, [partnerPublicKey, myKeys]);
+  }, [peerPublicKey, myKeys, contactName]);
 
   const sendMessage = () => {
-    if (!message.trim() || !partnerPublicKey) return;
-    const encryptedData = encrypt(message, myKeys.secret, partnerPublicKey);
+    if (!message.trim() || !peerPublicKey || !myKeys?.secret) {
+      Alert.alert("Handshake Incomplete", "Ensure peer key is set and message is not empty.");
+      return;
+    }
+
+    const encryptedData = encrypt(message, myKeys.secret, peerPublicKey);
+
     push(ref(database, 'messages/'), {
       data: encryptedData,
       sender: myKeys.publicK,
       timestamp: Date.now()
     });
+    
     setMessage('');
-  };
-
-  const copyToClipboard = async () => {
-    if (myKeys?.publicK) {
-      await Clipboard.setStringAsync(myKeys.publicK);
-      Alert.alert("Success", "Your Public ID has been copied to clipboard.");
-    } else {
-      Alert.alert("Error", "Identity not yet generated. Please wait a moment.");
-    }
   };
 
   if (isSetup) {
     return (
       <SafeAreaView style={styles.container}>
+        <ExpoStatusBar style="light" backgroundColor="#000" />
         <View style={styles.setupContainer}>
           <Text style={styles.title}>UnME</Text>
-          <Text style={styles.subtitle}>END-TO-END ENCRYPTED VAULT</Text>
+          <Text style={styles.subtitle}>END-TO-END ENCRYPTED</Text>
+
           <View style={styles.setupCard}>
-            <Text style={styles.label}>YOUR PUBLIC IDENTITY</Text>
-            <TouchableOpacity style={styles.btn} onPress={copyToClipboard}>
-              <Text style={styles.btnText}>COPY MY ID</Text>
+            <Text style={styles.label}>1. YOUR UNIQUE KEY</Text>
+            <TouchableOpacity 
+              style={styles.btn} 
+              onPress={() => {
+                if(myKeys?.publicK) {
+                  Clipboard.setStringAsync(myKeys.publicK);
+                  Alert.alert("System", "Key copied to clipboard.");
+                } else {
+                  Alert.alert("System", "Generating keys... please wait.");
+                }
+              }}
+            >
+              <Text style={styles.btnText}>COPY MY KEY</Text>
             </TouchableOpacity>
-            <Text style={[styles.label, { marginTop: 30 }]}>PARTNER'S PUBLIC IDENTITY</Text>
+
+            <Text style={[styles.label, { marginTop: 25 }]}>2. ASSIGN CONTACT NAME</Text>
             <TextInput 
               style={styles.inputBox}
-              placeholder="Paste partner's key here..." 
+              placeholder="Display name for this peer..." 
               placeholderTextColor="#444"
-              onChangeText={setPartnerPublicKey}
-              value={partnerPublicKey}
+              onChangeText={setContactName}
+              value={contactName}
             />
-            {partnerPublicKey.length > 20 && (
+
+            <Text style={[styles.label, { marginTop: 20 }]}>3. PASTE PEER KEY</Text>
+            <TextInput 
+              style={styles.inputBox}
+              placeholder="Paste public key here..." 
+              placeholderTextColor="#444"
+              onChangeText={setPeerPublicKey}
+              value={peerPublicKey}
+            />
+
+            {peerPublicKey.length > 20 && contactName.length > 0 && (
               <TouchableOpacity style={styles.mainBtn} onPress={() => setIsSetup(false)}>
-                <Text style={styles.mainBtnText}>ESTABLISH SECURE CHANNEL</Text>
+                <Text style={styles.mainBtnText}>INITIALIZE CHANNEL</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -89,30 +128,37 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
+      <StatusBar barStyle="light-content" backgroundColor="#000" translucent={false} />
+      
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>SECURE SESSION</Text>
+        <Text style={styles.headerTitle}>UnME</Text>
         <TouchableOpacity onPress={() => setIsSetup(true)}>
-          <Text style={styles.resetText}>LOGOUT</Text>
+          <Text style={styles.resetText}>SESSION SETTINGS</Text>
         </TouchableOpacity>
       </View>
+
       <FlatList
         data={chat}
         keyExtractor={item => item.id.toString()}
         renderItem={({ item }) => (
-          <View style={[styles.bubble, item.sender === myKeys.publicK ? styles.me : styles.her]}>
+          <View style={[
+            styles.bubble, 
+            item.display === 'Me' ? styles.me : styles.her
+          ]}>
+            <Text style={styles.nameLabel}>{item.display}</Text>
             <Text style={styles.msgText}>{item.text}</Text>
           </View>
         )}
         contentContainerStyle={{ padding: 10 }}
       />
+
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={styles.footer}>
           <TextInput 
             style={styles.chatInput}
             value={message}
             onChangeText={setMessage}
-            placeholder="Type encrypted message..."
+            placeholder="Write a message..."
             placeholderTextColor="#444"
           />
           <TouchableOpacity onPress={sendMessage}>
@@ -128,22 +174,33 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   setupContainer: { flex: 1, justifyContent: 'center', padding: 30 },
   title: { color: '#fff', fontSize: 42, fontWeight: '900', textAlign: 'center', letterSpacing: 8 },
-  subtitle: { color: '#444', textAlign: 'center', marginBottom: 50, letterSpacing: 2, fontSize: 10 },
+  subtitle: { color: '#444', textAlign: 'center', marginBottom: 50, letterSpacing: 2 },
   setupCard: { backgroundColor: '#050505', padding: 20, borderRadius: 10, borderWidth: 1, borderColor: '#111' },
-  label: { color: '#888', fontSize: 10, marginBottom: 8, fontWeight: 'bold' },
+  label: { color: '#888', fontSize: 10, marginBottom: 8 },
   btn: { backgroundColor: '#111', padding: 15, borderRadius: 5, alignItems: 'center', borderWidth: 1, borderColor: '#333' },
   btnText: { color: '#fff', fontWeight: 'bold' },
-  inputBox: { backgroundColor: '#000', color: '#fff', padding: 15, borderRadius: 5, borderWidth: 1, borderColor: '#333' },
+  inputBox: { backgroundColor: '#000', color: '#fff', padding: 15, borderRadius: 5, borderWidth: 1, borderColor: '#333', marginBottom: 10 },
   mainBtn: { backgroundColor: '#fff', padding: 18, borderRadius: 5, marginTop: 30, alignItems: 'center' },
-  mainBtnText: { color: '#000', fontWeight: 'bold', fontSize: 14 },
-  header: { padding: 20, borderBottomWidth: 1, borderColor: '#111', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 40 },
-  headerTitle: { color: '#fff', fontSize: 14, fontWeight: 'bold', letterSpacing: 4 },
-  resetText: { color: '#ff4444', fontSize: 10, fontWeight: 'bold' },
-  bubble: { padding: 12, borderRadius: 15, marginVertical: 4, maxWidth: '85%' },
-  me: { alignSelf: 'flex-end', backgroundColor: '#1a1a1a', borderBottomRightRadius: 2, borderWidth: 1, borderColor: '#333' },
+  mainBtnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
+  header: { 
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + 10 : 10, 
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1, 
+    borderColor: '#111', 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center',
+    backgroundColor: '#000'
+  },
+  headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', letterSpacing: 4 },
+  resetText: { color: '#444', fontSize: 10 },
+  bubble: { padding: 12, borderRadius: 12, marginVertical: 4, maxWidth: '80%' },
+  nameLabel: { color: '#555', fontSize: 10, fontWeight: 'bold', marginBottom: 4 },
+  me: { alignSelf: 'flex-end', backgroundColor: '#111', borderBottomRightRadius: 2, borderWidth: 1, borderColor: '#222' },
   her: { alignSelf: 'flex-start', backgroundColor: '#000', borderBottomLeftRadius: 2, borderWidth: 1, borderColor: '#222' },
   msgText: { color: '#fff', fontSize: 15 },
-  footer: { flexDirection: 'row', padding: 15, borderTopWidth: 1, borderColor: '#111', alignItems: 'center', backgroundColor: '#000' },
+  footer: { flexDirection: 'row', padding: 15, borderTopWidth: 1, borderColor: '#111', alignItems: 'center' },
   chatInput: { flex: 1, color: '#fff', backgroundColor: '#080808', padding: 12, borderRadius: 25, marginRight: 15, borderWidth: 1, borderColor: '#222' },
   sendBtn: { color: '#fff', fontWeight: 'bold', letterSpacing: 1 }
 });
